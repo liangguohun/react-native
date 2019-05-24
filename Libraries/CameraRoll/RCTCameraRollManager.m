@@ -19,7 +19,8 @@
 #import <React/RCTUtils.h>
 
 #import "RCTAssetsLibraryRequestHandler.h"
-
+#define ERROR_PICKER_UNAUTHORIZED_KEY @"E_PERMISSION_MISSING"
+#define ERROR_PICKER_UNAUTHORIZED_MSG @"Cannot access images. Please allow access if you want to be able to select images."
 @implementation RCTConvert (ALAssetGroup)
 
 RCT_ENUM_CONVERTER(ALAssetsGroupType, (@{
@@ -87,37 +88,69 @@ RCT_EXPORT_METHOD(saveToCameraRoll:(NSURLRequest *)request
                   resolve:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject)
 {
-  if ([type isEqualToString:@"video"]) {
-    // It's unclear if writeVideoAtPathToSavedPhotosAlbum is thread-safe
-    dispatch_async(dispatch_get_main_queue(), ^{
-      [self->_bridge.assetsLibrary writeVideoAtPathToSavedPhotosAlbum:request.URL completionBlock:^(NSURL *assetURL, NSError *saveError) {
-        if (saveError) {
-          reject(kErrorUnableToSave, nil, saveError);
-        } else {
-          resolve(assetURL.absoluteString);
+  [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus status) {
+    if(status == PHAuthorizationStatusDenied){
+        UIViewController *presentingController = RCTPresentedViewController();
+        if (presentingController == nil) {
+          RCTLogError(@"Tried to display alert view but there is no application window");
+          return;
         }
-      }];
-    });
-  } else {
-    [_bridge.imageLoader loadImageWithURLRequest:request
-                                        callback:^(NSError *loadError, UIImage *loadedImage) {
-      if (loadError) {
-        reject(kErrorUnableToLoad, nil, loadError);
+        UIAlertController *alertController = [UIAlertController
+                                       alertControllerWithTitle:@"Alert"
+                                       message:@"You have refused to access the album before, please go to the phone privacy Settings"
+                                       preferredStyle:UIAlertControllerStyleAlert];
+        
+        UIAlertAction *sureAction = [UIAlertAction
+                                     actionWithTitle:@"Sure"
+                                     style:UIAlertActionStyleDefault
+                                     handler:^(UIAlertAction *action){
+//          [presentingController dismissViewControllerAnimated:YES completion:nil];
+          [alertController.presentingViewController dismissViewControllerAnimated:YES completion:nil];
+        }];
+        
+        [alertController addAction:sureAction];
+        
+        [presentingController presentViewController:alertController animated:YES completion:nil];
+        
+        reject(ERROR_PICKER_UNAUTHORIZED_KEY, ERROR_PICKER_UNAUTHORIZED_MSG, nil);
         return;
-      }
-      // It's unclear if writeImageToSavedPhotosAlbum is thread-safe
+    } else if (status != PHAuthorizationStatusAuthorized) {
+      reject(ERROR_PICKER_UNAUTHORIZED_KEY, ERROR_PICKER_UNAUTHORIZED_MSG, nil);
+      return;
+    }
+    
+    if ([type isEqualToString:@"video"]) {
+      // It's unclear if writeVideoAtPathToSavedPhotosAlbum is thread-safe
       dispatch_async(dispatch_get_main_queue(), ^{
-        [self->_bridge.assetsLibrary writeImageToSavedPhotosAlbum:loadedImage.CGImage metadata:nil completionBlock:^(NSURL *assetURL, NSError *saveError) {
+        [self->_bridge.assetsLibrary writeVideoAtPathToSavedPhotosAlbum:request.URL completionBlock:^(NSURL *assetURL, NSError *saveError) {
           if (saveError) {
-            RCTLogWarn(@"Error saving cropped image: %@", saveError);
             reject(kErrorUnableToSave, nil, saveError);
           } else {
             resolve(assetURL.absoluteString);
           }
         }];
       });
-    }];
-  }
+    } else {
+      [self->_bridge.imageLoader loadImageWithURLRequest:request
+          callback:^(NSError *loadError, UIImage *loadedImage) {
+            if (loadError) {
+              reject(kErrorUnableToLoad, nil, loadError);
+              return;
+            }
+            // It's unclear if writeImageToSavedPhotosAlbum is thread-safe
+            dispatch_async(dispatch_get_main_queue(), ^{
+              [self->_bridge.assetsLibrary writeImageToSavedPhotosAlbum:loadedImage.CGImage metadata:nil completionBlock:^(NSURL *assetURL, NSError *saveError) {
+                if (saveError) {
+                  RCTLogWarn(@"Error saving cropped image: %@", saveError);
+                  reject(kErrorUnableToSave, nil, saveError);
+                } else {
+                  resolve(assetURL.absoluteString);
+                }
+              }];
+            });
+          }];    
+    }
+  }];
 }
 
 static void RCTResolvePromise(RCTPromiseResolveBlock resolve,
